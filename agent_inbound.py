@@ -12,13 +12,14 @@ matched by dispatch rules configured in LiveKit.
 
 import logging
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions
 from livekit.plugins import openai, deepgram, silero
 
-load_dotenv(".env.local")
+load_dotenv(Path(__file__).resolve().parent / ".env.local")
 
 logger = logging.getLogger(__name__)
 

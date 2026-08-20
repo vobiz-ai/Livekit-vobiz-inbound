@@ -4,14 +4,15 @@ Setup LiveKit inbound trunk and dispatch rule for Vobiz calls.
 
 import asyncio
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from livekit import api
 from livekit.protocol import sip as sip_proto
 
-load_dotenv(".env.local")
+load_dotenv(Path(__file__).resolve().parent / ".env.local")
 
 LIVEKIT_URL = os.getenv("LIVEKIT_URL")
-VOBIZ_INBOUND_NUMBER = os.getenv("VOBIZ_INBOUND_NUMBER", "+912271264190")
+VOBIZ_INBOUND_NUMBER = os.getenv("VOBIZ_INBOUND_NUMBER", "+15550003333")
 AGENT_NAME = "voice-assistant"
 
 async def main():

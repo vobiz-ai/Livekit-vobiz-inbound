@@ -1,122 +1,68 @@
-"""
-LiveKit AI Voice Agent for Inbound Calls
-
-This agent handles inbound SIP calls from Vobiz using:
-- Deepgram for Speech-to-Text (STT)
-- OpenAI for Text-to-Speech (TTS) and LLM
-- Automatic greeting when caller connects
-
-The agent is automatically spawned when an inbound call arrives,
-matched by dispatch rules configured in LiveKit.
-"""
+"""Answer inbound Vobiz calls with a LiveKit voice agent."""
 
 import logging
-import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
-from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions
-from livekit.plugins import openai, deepgram, silero
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    TurnHandlingOptions,
+    cli,
+    inference,
+)
+from livekit.agents.beta import EndCallTool
 
 load_dotenv(Path(__file__).resolve().parent / ".env.local")
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("vobiz-inbound")
+
+# Must match AGENT_NAME in setup_inbound.py.
+AGENT_NAME = "voice-assistant"
 
 
 class VoiceAssistant(Agent):
-    """AI voice assistant for handling inbound calls."""
-
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful and friendly voice AI assistant.
-            You are speaking with a caller who has dialed in to reach support.
-            Be warm, professional, and helpful.
-            Ask how you can assist them today."""
+            instructions=(
+                "You are a friendly voice AI assistant answering a phone call. "
+                "Keep replies to one or two short sentences, and do not use lists, markdown or "
+                "emojis. Say you are an AI assistant if you are asked. "
+                "When the caller is finished, say goodbye and end the call."
+            ),
+            tools=[EndCallTool()],
         )
 
 
-async def entrypoint(ctx: agents.JobContext):
-    """
-    Entrypoint for inbound SIP calls.
+server = AgentServer()
 
-    This function is called automatically when:
-    1. An inbound call arrives at the Vobiz number
-    2. Vobiz routes it to LiveKit SIP endpoint
-    3. LiveKit dispatch rule matches and spawns this agent
-    """
-    logger.info(f"[OK] Starting voice assistant for room: {ctx.room.name}")
 
-    # Get configuration from environment
-    deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
-    openai_api_key = os.getenv("OPENAI_API_KEY")
+@server.rtc_session(agent_name=AGENT_NAME)
+async def entrypoint(ctx: JobContext) -> None:
+    ctx.log_context_fields = {"room": ctx.room.name}
 
-    if not deepgram_api_key:
-        raise ValueError("DEEPGRAM_API_KEY not found in .env.local")
-    if not openai_api_key:
-        raise ValueError("OPENAI_API_KEY not found in .env.local")
-
-    # Configure the agent session
-    session = AgentSession(
-        # Speech-to-Text: Deepgram Nova-3 (multilingual support)
-        stt=deepgram.STT(
-            model="nova-3",
-            language="multi"  # Supports multiple languages
-        ),
-
-        # Large Language Model: OpenAI GPT-4o-mini
-        llm=openai.LLM(
-            model="gpt-4o-mini"
-        ),
-
-        # Text-to-Speech: OpenAI TTS-1 with Alloy voice
-        tts=openai.TTS(
-            model="tts-1",
-            voice="alloy"  # Natural, balanced voice
-        ),
-
-        # Voice Activity Detection: Silero VAD
-        vad=silero.VAD.load(),
+    session: AgentSession = AgentSession(
+        stt=inference.STT("deepgram/nova-3", language="multi"),
+        llm=inference.LLM("openai/gpt-4.1-mini"),
+        tts=inference.TTS("cartesia/sonic-3", voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
+        turn_handling=TurnHandlingOptions(turn_detection=inference.TurnDetector()),
     )
 
-    # Start the session
-    await session.start(
-        room=ctx.room,
-        agent=VoiceAssistant(),
-        room_input_options=RoomInputOptions(
-            # Don't close session when caller disconnects (allows reconnection)
-            close_on_disconnect=False,
-        ),
-    )
+    await session.start(agent=VoiceAssistant(), room=ctx.room)
 
-    # Greet the caller when they connect
-    # For inbound calls, the SIP participant is already in the room
-    try:
-        logger.info("[OK] Generating greeting for caller...")
-        await session.generate_reply(
-            instructions="Greet the caller warmly and professionally. Introduce yourself as a voice AI assistant and ask how you can help them today."
-        )
-    except RuntimeError as e:
-        logger.warning(f"[!] Could not generate greeting (session may be closing): {e}")
+    # sip.callIDFull equals bridge_uuid in the Vobiz CDR, so log it to join the two records.
+    for participant in ctx.room.remote_participants.values():
+        if call_id := participant.attributes.get("sip.callIDFull"):
+            logger.info("inbound call connected", extra={"sip_call_id": call_id})
+
+    # The caller is already in the room, so the agent speaks first.
+    await session.generate_reply(
+        instructions="Greet the caller, say you are an AI assistant, and ask how you can help."
+    )
 
 
 if __name__ == "__main__":
-    """
-    Run the agent in 'start' mode to handle all inbound calls.
-
-    Usage:
-        uv run python agent_inbound.py start
-
-    The agent will:
-    - Connect to LiveKit cloud
-    - Listen for rooms created by dispatch rules
-    - Automatically join when an inbound call arrives
-    - Greet the caller and start conversation
-    """
-    agents.cli.run_app(
-        agents.WorkerOptions(
-            entrypoint_fnc=entrypoint,
-            # Agent name must match the dispatch rule configuration
-            agent_name="voice-assistant",
-        )
-    )
+    cli.run_app(server)
